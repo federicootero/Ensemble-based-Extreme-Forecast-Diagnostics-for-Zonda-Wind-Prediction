@@ -1,131 +1,119 @@
+# -*- coding: utf-8 -*-
 """
-Load and extract surface EFI, SOT, or CPF diagnostics for Zonda wind analysis.
+Reproducible loader for EFI, SOT, and CPF for Zonda days.
 
-This script:
-1. Loads ECMWF ensemble-based diagnostics (EFI, SOT, CPF) from GRIB files.
-2. Consolidates yearly diagnostics into a single xarray Dataset (optional).
-3. Extracts spatially averaged values over a fixed box (Mendoza region) for Zonda event dates.
-4. Stores output as a NumPy array [variable, event, lead_time].
+Output:
+    processed_data/efi_station.npy
+    processed_data/sot_station.npy
+    processed_data/cpf_station.npy
 
-Notes:
-- Raw ECMWF GRIB files are NOT included due to licensing restrictions. 
-- Users must provide their own GRIB files. (https://apps.ecmwf.int/mars-catalogue/?class=od or https://www.ecmwf.int/)
-- Processed observational Zonda dates must be provided as CSV or Excel.  
+Variables: ws10i, fg10i, t2i, mx2ti
+Lead times: 6 steps (24h, 48h, ..., 144h)
 """
 
 import os
 import numpy as np
 import pandas as pd
 import xarray as xr
-from typing import List
+from datetime import datetime
 
-# ---------------------------------------------------------------------------
-# CONFIGURATION
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# CONFIG
+# ------------------------------------------------------------------
 
-DATA_DIR = "path_to_your_grib_files"  # User-defined
-DIAGNOSTIC = "EFI"  # "EFI", "SOT", or "CPF"
-TARGET_VARS = ["ws10i", "t2i", "fg10i", "mx2ti"]
+# EFI/SOT/CPF data directories (relative to repo)
+DATA_DIR_EFI = os.path.join("data", "EFI")
+DATA_DIR_SOT = os.path.join("data", "SOT")
+DATA_DIR_CPF = os.path.join("data", "CPF")
 
-# Mendoza region spatial box
-LAT_SLICE = slice(-33.3, -32.3)
+# Station box (Mendoza example)
+LAT_SLICE = slice(-32.3, -33.3)
 LON_SLICE = slice(-68.9, -68.7)
 
-# Years to process (if consolidated yearly GRIBs exist)
-YEARS = list(range(2013, 2025))
+# Variables to extract
+VAR_KEYS = ['ws10i', 'fg10i', 't2i', 'mx2ti']
 
-# Path to Zonda event dates
-EVENTS_FILE = "path_to_zonda_event_dates.csv"  # Must contain columns: fechas_zonda, archivos
+# Number of forecast steps
+N_LEADS = 5  # 24h, 48h, ..., 120h
 
-# ---------------------------------------------------------------------------
-# FUNCTIONS
-# ---------------------------------------------------------------------------
+# Zonda days
+zonda_days = ['20080518','20080520','20080712','20080810','20080815','20080826',
+              '20080901','20081011','20081108','20090619','20090707','20090812',
+              '20090814','20090905','20091004','20091010','20091012','20091023',
+              '20091117','20091119','20091124','20100112','20100116','20100614',
+              '20100623','20100711','20100819','20100826','20100828','20101027',
+              '20101107','20101202','20101210','20101215','20110116','20110413',
+              '20110422','20110714','20110725','20110827','20110829','20110911',
+              '20111031','20111108','20120527','20120612','20120620','20120721',
+              '20121108','20121224','20130527','20130531','20130627','20130718',
+              '20130807','20130910','20131009','20131019','20131022','20131106',
+              '20131114','20131116','20140529','20140611','20140702','20140706', 
+              '20140802','20140830','20140925','20141017','20141203','20150606', 
+              '20150712','20150727','20150805','20150821','20150825','20150828',
+              '20150914','20151109','20151118','20160415','20160423','20160816',
+              '20161101','20161103','20161104','20161204','20170617','20170715',
+              '20171003','20171004','20171017','20171028','20171217','20180610',
+              '20181029','20181104','20181213','20190624','20190721','20190829', 
+              '20190920','20200611','20200929','20210818','20210821','20210911',
+              '20210912','20220424','20220426','20220706','20220907','20221007',
+              '20230609','20230626','20230721','20230821','20230909','20230910',
+              '20230916','20231028','20231110','20231115','20231117','20231214',
+              '20231216','20240429','20240507','20240609','20240613','20240618',
+              '20240802','20240902','20240919','20240921','20240930']
 
-def load_surface_file(file_path: str, variables: List[str]) -> xr.Dataset:
-    """Load a single GRIB file and retain selected surface variables."""
-    ds = xr.open_dataset(
-        file_path,
-        engine="cfgrib",
-        backend_kwargs={"filter_by_keys": {"typeOfLevel": "surface"}},
-    )
-    available_vars = [v for v in variables if v in ds.variables]
-    if not available_vars:
-        raise ValueError(f"No target variables found in {file_path}")
-    return ds[available_vars]
+zonda_dates = [datetime.strptime(date, "%Y%m%d") for date in zonda_days]
 
+# ------------------------------------------------------------------
+# FUNCTION TO LOAD DATA
+# ------------------------------------------------------------------
 
-def load_yearly_diagnostics(years: List[int], data_dir: str, diagnostic: str) -> xr.Dataset:
-    """Load and concatenate yearly diagnostics into one Dataset."""
-    datasets = []
-    for year in years:
-        file_path = os.path.join(data_dir, f"{year}_{diagnostic}.grib")
+def load_station_data(file_dir, prefix_suffix, lat_slice, lon_slice, var_keys, zonda_dates, n_leads):
+    n_vars = len(var_keys)
+    n_days = len(zonda_dates)
+    arr = np.full((n_vars, n_days, n_leads), np.nan)
+
+    for i, zonda_date in enumerate(zonda_dates):
+        file_name = f"{prefix_suffix}_{zonda_date.strftime('%Y%m%d')}.grib"
+        file_path = os.path.join(file_dir, file_name)
+
         if not os.path.exists(file_path):
-            print(f"⚠️ Missing file: {file_path}")
+            print(f"File missing: {file_path}")
             continue
+
         try:
-            ds = load_surface_file(file_path, TARGET_VARS)
-            datasets.append(ds)
+            ds = xr.open_mfdataset(file_path, engine='cfgrib')
+            station_data = ds.sel(latitude=lat_slice, longitude=lon_slice)
+            station_data = station_data.mean(dim='latitude').mean(dim='longitude')
+
+            for t_idx in range(len(ds.time)):
+                for s_idx in range(len(ds.step)):
+                    forecast_date = pd.Timestamp(ds.time[t_idx].values) + ds.step[s_idx].values
+                    if forecast_date.normalize() == zonda_date.normalize():
+                        for v_idx, var in enumerate(var_keys):
+                            arr[v_idx, i, s_idx] = station_data[var][t_idx, s_idx].values
+
         except Exception as e:
-            print(f"❌ Error loading {file_path}: {e}")
-    if not datasets:
-        raise RuntimeError(f"No {diagnostic} datasets were loaded.")
-    return xr.concat(datasets, dim="time")
-
-
-def extract_box_mean(ds: xr.Dataset) -> xr.Dataset:
-    """Spatial mean over predefined latitude–longitude box."""
-    return ds.sel(latitude=LAT_SLICE, longitude=LON_SLICE).mean(dim=["latitude", "longitude"])
-
-
-def extract_diagnostics_for_events(event_dates: pd.Series, file_ids: pd.Series, data_dir: str) -> np.ndarray:
-    """Extract diagnostics for Zonda events over all lead times and variables."""
-    n_vars = len(TARGET_VARS)
-    n_events = len(event_dates)
-    # Load one file to get number of steps
-    sample_ds = xr.open_dataset(os.path.join(data_dir, f"{file_ids.iloc[0]}{DIAGNOSTIC}.grib"), engine="cfgrib")
-    n_leads = sample_ds.sizes["step"]
-
-    data = np.full((n_vars, n_events, n_leads), np.nan)
-
-    for i, (date, fname) in enumerate(zip(event_dates, file_ids)):
-        file_path = os.path.join(data_dir, f"{fname}{DIAGNOSTIC}.grib")
-        if not os.path.exists(file_path):
-            print(f"⚠️ Missing file: {file_path}")
+            print(f"Error loading {file_path}: {e}")
             continue
 
-        ds = xr.open_dataset(file_path, engine="cfgrib")
-        ds_box = extract_box_mean(ds)
+    return arr
 
-        for j in range(n_leads):
-            for t in range(len(ds.time)):
-                valid_time = pd.to_datetime(ds.valid_time.values[t, j])
-                if valid_time.normalize() == pd.to_datetime(date).normalize():
-                    for v, var in enumerate(TARGET_VARS):
-                        if var in ds_box:
-                            data[v, i, j] = ds_box[var].isel(time=t, step=j).values
+# ------------------------------------------------------------------
+# LOAD EFI, SOT, CPF
+# ------------------------------------------------------------------
 
-    return data
+efi_station = load_station_data(DATA_DIR_EFI, "EFI", LAT_SLICE, LON_SLICE, VAR_KEYS, zonda_dates, N_LEADS)
+sot_station = load_station_data(DATA_DIR_SOT, "SOT", LAT_SLICE, LON_SLICE, VAR_KEYS, zonda_dates, N_LEADS)
+cpf_station = load_station_data(DATA_DIR_CPF, "CPF", LAT_SLICE, LON_SLICE, VAR_KEYS, zonda_dates, N_LEADS)
 
-# ---------------------------------------------------------------------------
-# MAIN
-# ---------------------------------------------------------------------------
+# ------------------------------------------------------------------
+# SAVE OUTPUT
+# ------------------------------------------------------------------
 
-if __name__ == "__main__":
-    print(f"Loading {DIAGNOSTIC} diagnostics...")
+os.makedirs("processed_data", exist_ok=True)
+np.save("processed_data/efi_station.npy", efi_station)
+np.save("processed_data/sot_station.npy", sot_station)
+np.save("processed_data/cpf_station.npy", cpf_station)
 
-    # Step 1: Load yearly diagnostics (optional)
-    # diag_total = load_yearly_diagnostics(YEARS, DATA_DIR, DIAGNOSTIC)
-    # print(diag_total)
-
-    # Step 2: Load Zonda event dates
-    if not os.path.exists(EVENTS_FILE):
-        raise FileNotFoundError(f"Event file not found: {EVENTS_FILE}")
-
-    zonda_df = pd.read_csv(EVENTS_FILE)  # Ensure columns: fechas_zonda, archivos
-    zonda_dates = pd.to_datetime(zonda_df["fechas_zonda"])
-    file_ids = zonda_df["archivos"]
-
-    # Step 3: Extract diagnostics for events
-    diagnostics = extract_diagnostics_for_events(zonda_dates, file_ids, DATA_DIR)
-    print("Extraction completed.")
-    print("Diagnostics array shape:", diagnostics.shape)
+print("EFI, SOT, CPF station arrays saved in processed_data/")
+print("Shapes:", efi_station.shape, sot_station.shape, cpf_station.shape)

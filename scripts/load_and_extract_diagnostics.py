@@ -117,3 +117,71 @@ np.save("processed_data/cpf_station.npy", cpf_station)
 
 print("EFI, SOT, CPF station arrays saved in processed_data/")
 print("Shapes:", efi_station.shape, sot_station.shape, cpf_station.shape)
+
+# ------------------------------------------------------------------
+# GENERATE NON-ZONDA DATES (exclude ±3 days around Zonda)
+# ------------------------------------------------------------------
+
+all_dates = [START_DATE + timedelta(days=i) for i in range((END_DATE - START_DATE).days + 1)]
+
+buffer_days = set()
+for z_date in zonda_dates:
+    for offset in range(-3, 4):  # ±3 days
+        buffered_date = z_date + timedelta(days=offset)
+        if START_DATE <= buffered_date <= END_DATE:
+            buffer_days.add(buffered_date)
+
+non_zonda_dates = [date for date in all_dates if date not in buffer_days]
+print(f"Total non-Zonda days: {len(non_zonda_dates)}")
+
+# ------------------------------------------------------------------
+# FUNCTION TO LOAD STATION DATA FOR NON-ZONDA
+# ------------------------------------------------------------------
+
+def load_non_zonda_station(file_dir, prefix, var_keys, non_zonda_dates, lat_slice, lon_slice, n_leads):
+    n_vars = len(var_keys)
+    n_days = len(non_zonda_dates)
+    arr = np.full((n_vars, n_days, n_leads), np.nan)
+
+    for i, date in enumerate(non_zonda_dates):
+        file_name = f"{prefix}_{date.strftime('%Y%m%d')}.grib"
+        file_path = os.path.join(file_dir, file_name)
+
+        if not os.path.exists(file_path):
+            continue  # skip missing files
+
+        try:
+            ds = xr.open_mfdataset(file_path, engine='cfgrib')
+            station_data = ds.sel(latitude=lat_slice, longitude=lon_slice)
+            station_data = station_data.mean(dim='latitude').mean(dim='longitude')
+
+            for t_idx in range(len(ds.time)):
+                for s_idx in range(len(ds.step)):
+                    for v_idx, var in enumerate(var_keys):
+                        arr[v_idx, i, s_idx] = station_data[var][t_idx, s_idx].values
+
+        except Exception as e:
+            print(f"Error loading {file_path}: {e}")
+            continue
+
+    return arr
+
+# ------------------------------------------------------------------
+# LOAD NON-ZONDA DATA
+# ------------------------------------------------------------------
+
+efi_non_zonda = load_non_zonda_station(DATA_DIR_EFI, "EFI", VAR_KEYS, non_zonda_dates, LAT_SLICE, LON_SLICE, N_LEADS)
+sot_non_zonda = load_non_zonda_station(DATA_DIR_SOT, "SOT", VAR_KEYS, non_zonda_dates, LAT_SLICE, LON_SLICE, N_LEADS)
+cpf_non_zonda = load_non_zonda_station(DATA_DIR_CPF, "CPF", VAR_KEYS, non_zonda_dates, LAT_SLICE, LON_SLICE, N_LEADS)
+
+# ------------------------------------------------------------------
+# SAVE OUTPUT
+# ------------------------------------------------------------------
+
+os.makedirs("processed_data", exist_ok=True)
+np.save("processed_data/efi_non_zonda.npy", efi_non_zonda)
+np.save("processed_data/sot_non_zonda.npy", sot_non_zonda)
+np.save("processed_data/cpf_non_zonda.npy", cpf_non_zonda)
+
+print("Non-Zonda arrays saved in processed_data/")
+print("Shapes:", efi_non_zonda.shape, sot_non_zonda.shape, cpf_non_zonda.shape)
